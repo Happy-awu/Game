@@ -83,6 +83,8 @@ class Action:
         self.last_sync: float = 0.0
         self.server_x: float = 0.0
         self.server_y: float = 0.0
+        self._prev_on_ground: bool = False
+        self._jump_cooldown: int = 0
 
     # ==================== 图标管理 ====================
 
@@ -332,6 +334,16 @@ class Action:
 
     # ==================== 碰撞检测 ====================
 
+    def _on_ground(self) -> bool:
+        cx = self.player.x + self.tile_size // 2 #type: ignore
+        cy = self.player.y + self.tile_size + 1 #type: ignore
+        tx, ty = int(cx // self.tile_size), int(cy // self.tile_size)
+        tile = self.get_tile(tx, ty)
+        if tile is None:
+            return False
+        prop = self.tile_properties.get(tile.tile_id)
+        return prop is not None and not prop.get("walkable", False)
+
     def can_walk(self, world_x: float, world_y: float) -> bool:
         for ox, oy in [(0, 0), (self.tile_size - 1, 0),
                        (0, self.tile_size - 1), (self.tile_size - 1, self.tile_size - 1)]:
@@ -388,27 +400,80 @@ class Action:
                 now = time.time()
                 vec=self.player.vec
 
+                #物理更新
+                on_ground = self._on_ground()
+
+                # 跳跃冷却：落地后 6 帧内不能起跳
+                if on_ground:
+                    if not self._prev_on_ground:
+                        self._jump_cooldown = 10
+                    elif self._jump_cooldown > 0:
+                        self._jump_cooldown -= 1
+                self._prev_on_ground = on_ground
+
+                # 地面接触 → 清零垂直速度（在力结算之前）
+                if on_ground and vec.velocity.y is not None and vec.velocity.y > 0:
+                    vec.velocity.y = 0.0
+
                 # 键盘输入 → 施加力
                 keys = pygame.key.get_pressed()
-                if keys[pygame.K_UP] or keys[pygame.K_w]:    vec.add_force(Cross(0, -3))
-                if keys[pygame.K_DOWN] or keys[pygame.K_s]:  vec.add_force(Cross(0, 3))
                 if keys[pygame.K_LEFT] or keys[pygame.K_a]:  vec.add_force(Cross(-3, 0))
                 if keys[pygame.K_RIGHT] or keys[pygame.K_d]: vec.add_force(Cross(3, 0))
+                if keys[pygame.K_SPACE] and on_ground and self._jump_cooldown == 0:
+                    vec.add_force(Cross(0, -35.0))
+
+                #常规量计算
+                # 重力（脚下无承托则下落）
+                if not on_ground:
+                    mass = vec.phy_consts.mass
+                    g = vec.phy_consts.gravity
+                    vec.add_force(Cross(0, mass * g))
+
+                # 摩擦力
+                if vec.velocity.x is not None:
+                    if abs(vec.velocity.x) < vec.phy_consts.friction:
+                        vec.velocity.x = 0.0
+                    elif vec.velocity.x > 0:
+                        vec.velocity.x -= vec.phy_consts.friction
+                    else:
+                        vec.velocity.x += vec.phy_consts.friction
+                if vec.velocity.y is not None:
+                    if abs(vec.velocity.y) < vec.phy_consts.friction:
+                        vec.velocity.y = 0.0
+                    elif vec.velocity.y > 0:
+                        vec.velocity.y -= vec.phy_consts.friction
+                    else:
+                        vec.velocity.y += vec.phy_consts.friction
 
                 # 物理结算：力 → 加速度 → 速度
                 vec.update_acc()
                 vec.update_vel()
 
-                # 速度 → 位移（带碰撞检测）
+                if vec.velocity.x or vec.velocity.y:
+                    print(vec.velocity)
+
+                # 速度 → 位移（分轴碰撞检测）
                 vx = vec.velocity.x if vec.velocity.x is not None else 0.0
                 vy = vec.velocity.y if vec.velocity.y is not None else 0.0
-                if vx or vy:
+                if vx:
                     new_x = self.player.x + vx
-                    new_y = self.player.y + vy
-                    if self.can_walk(new_x, new_y):
-                        self.player.x, self.player.y = new_x, new_y
+                    if self.can_walk(new_x, self.player.y):
+                        self.player.x = new_x
                     else:
-                        vec.velocity = Cross(0.0, 0.0)
+                        vec.velocity.x = 0.0
+                if vy:
+                    new_y = self.player.y + vy
+                    if self.can_walk(self.player.x, new_y):
+                        self.player.y = new_y
+                    else:
+                        if vy > 0:  # 下落 → 逐像素贴近地面
+                            for dy in range(1, int(vy) + 1):
+                                test_y = self.player.y + dy
+                                if not self.can_walk(self.player.x, test_y):
+                                    break
+                                self.player.y = test_y
+                        vec.velocity.y = 0.0
+                if vx or vy:
                     self.player_node.world_pos = (self.player.x, self.player.y)  #type: ignore
 
                 # 同步服务端
@@ -429,7 +494,7 @@ class Action:
 
                 for resp in self.drain_recv():
                     data = resp.get("data", {})
-                    # 移动同步（待重构）
+                    # 移动同步
                     if resp.get("status") == "ok":
                         if "new_x" in data and "new_y" in data:
                             self.server_x, self.server_y = data["new_x"], data["new_y"]
@@ -495,7 +560,8 @@ def test_client():
     pid = f"player_{int(time.time())}"
     player = Player(can_block=True, health=100, damage=10, backpack_slots=20, pid=pid)
     player.x = 160.0
-    player.y = 160.0
+    GROUND_TILE_Y = 16
+    player.y = float(GROUND_TILE_Y * 32 - 32)
     srv.send(pickle.dumps({"cmd_name": "AddPlayer", "params": {"player": player}}))
     resp = pickle.loads(srv.recv(4096))
     print(f"[DONE] AddPlayer: {resp}")
@@ -511,10 +577,12 @@ def test_client():
                 for lx in range(Action.CHUNK_TILES):
                     gx = cx * Action.CHUNK_TILES + lx
                     gy = cy * Action.CHUNK_TILES + ly
-                    if (gx == 0 or gy == 0 or gx == MAP_TILES_W - 1 or gy == MAP_TILES_H - 1):
+                    if gx == 0 or gx == MAP_TILES_W - 1 or gy == 0 or gy == MAP_TILES_H - 1:
                         row.append(Tile(tile_id=1, image=action.get_icon("wall")))
-                    else:
+                    elif gy < GROUND_TILE_Y:
                         row.append(Tile(tile_id=0, image=action.get_icon("grass")))
+                    else:
+                        row.append(Tile(tile_id=1, image=action.get_icon("wall")))
                 tiles.append(row)
             action.load_chunk(Chunk(tiles, (cx, cy), cx, cy))
     print("[DONE] 测试地图加载完毕 (48×48 瓦片，边界围墙)")

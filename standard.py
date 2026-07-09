@@ -63,7 +63,7 @@ class Entity:
             '''物理常量的定义'''
             def __init__(self):
                 self.mass=1.0
-                self.gravity=9.8
+                self.gravity=3.98
                 self.damping=0.9
                 self.friction=0.75
 
@@ -88,35 +88,19 @@ class Entity:
             self.force.clear()
 
         def update_vel(self):
-            '''每 tick 将加速度累加到速度，再施加阻尼与摩擦力'''
-            if self.acceleration:
-                total = Cross(None, None)
-                for a in self.acceleration:
-                    total += a
-                self.velocity += total
-                self.acceleration.clear()
-
+            '''每 tick 先对旧速度施加阻尼，再累加本帧加速度'''
             d = self.phy_consts.damping
             if self.velocity.x is not None:
                 self.velocity.x *= d
             if self.velocity.y is not None:
                 self.velocity.y *= d
 
-            fr = self.phy_consts.friction
-            if self.velocity.x is not None:
-                if abs(self.velocity.x) < fr:
-                    self.velocity.x = 0.0
-                elif self.velocity.x > 0:
-                    self.velocity.x -= fr
-                else:
-                    self.velocity.x += fr
-            if self.velocity.y is not None:
-                if abs(self.velocity.y) < fr:
-                    self.velocity.y = 0.0
-                elif self.velocity.y > 0:
-                    self.velocity.y -= fr
-                else:
-                    self.velocity.y += fr
+            if self.acceleration:
+                total = Cross(None, None)
+                for a in self.acceleration:
+                    total += a
+                self.velocity += total
+                self.acceleration.clear()
 
         def add_force(self, f: Cross):
             self.force.append(f)
