@@ -420,7 +420,7 @@ class Action:
                 if keys[pygame.K_LEFT] or keys[pygame.K_a]:  vec.add_force(Cross(-3, 0))
                 if keys[pygame.K_RIGHT] or keys[pygame.K_d]: vec.add_force(Cross(3, 0))
                 if keys[pygame.K_SPACE] and on_ground and self._jump_cooldown == 0:
-                    vec.add_force(Cross(0, -35.0))
+                    vec.velocity.y = -35.0
 
                 #常规量计算
                 # 重力（脚下无承托则下落）
@@ -494,17 +494,12 @@ class Action:
 
                 for resp in self.drain_recv():
                     data = resp.get("data", {})
-                    # 移动同步
-                    if resp.get("status") == "ok":
-                        if "new_x" in data and "new_y" in data:
-                            self.server_x, self.server_y = data["new_x"], data["new_y"]
-                            if (self.server_x, self.server_y) != (self.player.x, self.player.y):
-                                self.player.x, self.player.y = self.server_x, self.server_y
-                                self.player_node.world_pos = (self.player.x, self.player.y)
-                    else:
-                        if resp.get("status") == "error":
-                            self.player.x, self.player.y = self.server_x, self.server_y
-                            self.player_node.world_pos = (self.player.x, self.player.y)
+                    # 移动同步：仅在服务端报错时回滚到上次确认位置
+                    if resp.get("status") == "error":
+                        self.player.x, self.player.y = self.server_x, self.server_y
+                        self.player_node.world_pos = (self.player.x, self.player.y)
+                    elif "new_x" in data and "new_y" in data:
+                        self.server_x, self.server_y = data["new_x"], data["new_y"]
 
                     if "players" in data or "mobs" in data or "entities" in data:
                         self.clear_type(self.Type.MOB)
