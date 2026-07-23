@@ -85,6 +85,7 @@ class Action:
         self.server_y: float = 0.0
         self._prev_on_ground: bool = False
         self._jump_cooldown: int = 0
+        self._jump_charge: int = 0
 
     # ==================== 图标管理 ====================
 
@@ -356,7 +357,7 @@ class Action:
                 return False
         return True
 
-    # ==================== 网络接收（待重构） ====================
+    # ==================== 网络接收 ====================
 
     def drain_recv(self) -> list:
         sock = self.server_socket
@@ -406,10 +407,15 @@ class Action:
                 # 跳跃冷却：落地后 6 帧内不能起跳
                 if on_ground:
                     if not self._prev_on_ground:
-                        self._jump_cooldown = 10
+                        self._jump_cooldown = 6
                     elif self._jump_cooldown > 0:
                         self._jump_cooldown -= 1
                 self._prev_on_ground = on_ground
+
+                # 跳跃蓄力：跳跃后不断施加力并逐渐衰减为0
+                if self._jump_charge:
+                    self._jump_charge -= 2
+                    vec.add_force(Cross(0, -2.53*self._jump_charge))
 
                 # 地面接触 → 清零垂直速度（在力结算之前）
                 if on_ground and vec.velocity.y is not None and vec.velocity.y > 0:
@@ -417,17 +423,14 @@ class Action:
 
                 # 键盘输入 → 施加力
                 keys = pygame.key.get_pressed()
-                if keys[pygame.K_LEFT] or keys[pygame.K_a]:  vec.add_force(Cross(-3, 0))
-                if keys[pygame.K_RIGHT] or keys[pygame.K_d]: vec.add_force(Cross(3, 0))
-                if keys[pygame.K_SPACE] and on_ground and self._jump_cooldown == 0:
-                    vec.velocity.y = -35.0
+                if keys[pygame.K_LEFT] or keys[pygame.K_a]:  vec.add_force(Cross(-2.75, 0))
+                if keys[pygame.K_RIGHT] or keys[pygame.K_d]: vec.add_force(Cross(2.75, 0))
+                if keys[pygame.K_SPACE] and on_ground:
+                    if self._jump_cooldown == 0: 
+                        self._jump_charge = 8
+                        vec.add_force(Cross(0, -20.24))
 
                 #常规量计算
-                # 重力（脚下无承托则下落）
-                if not on_ground:
-                    mass = vec.phy_consts.mass
-                    g = vec.phy_consts.gravity
-                    vec.add_force(Cross(0, mass * g))
 
                 # 摩擦力
                 if vec.velocity.x is not None:
@@ -437,20 +440,16 @@ class Action:
                         vec.velocity.x -= vec.phy_consts.friction
                     else:
                         vec.velocity.x += vec.phy_consts.friction
-                if vec.velocity.y is not None:
-                    if abs(vec.velocity.y) < vec.phy_consts.friction:
-                        vec.velocity.y = 0.0
-                    elif vec.velocity.y > 0:
-                        vec.velocity.y -= vec.phy_consts.friction
-                    else:
-                        vec.velocity.y += vec.phy_consts.friction
 
                 # 物理结算：力 → 加速度 → 速度
                 vec.update_acc()
                 vec.update_vel()
 
-                if vec.velocity.x or vec.velocity.y:
-                    print(vec.velocity)
+                # 重力（脚下无承托则下落）
+                if not on_ground:
+                    mass = vec.phy_consts.mass
+                    g = vec.phy_consts.gravity
+                    vec.add_force(Cross(0, mass * g))
 
                 # 速度 → 位移（分轴碰撞检测）
                 vx = vec.velocity.x if vec.velocity.x is not None else 0.0

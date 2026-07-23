@@ -63,7 +63,7 @@ class Entity:
             '''物理常量的定义'''
             def __init__(self):
                 self.mass=1.0
-                self.gravity=3.98
+                self.gravity=3.4
                 self.damping=0.9
                 self.friction=0.75
 
